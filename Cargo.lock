@@ -315,7 +315,6 @@ dependencies = [
  "reputation-registry",
  "serde_json",
  "soroban-sdk",
- "soroban-token-sdk",
  "treasury",
 ]
 
@@ -326,7 +325,6 @@ dependencies = [
  "circle",
  "common",
  "soroban-sdk",
- "soroban-token-sdk",
 ]
 
 [[package]]
@@ -1795,7 +1793,6 @@ version = "0.1.0"
 dependencies = [
  "common",
  "soroban-sdk",
- "soroban-token-sdk",
 ]
 
 [[package]]

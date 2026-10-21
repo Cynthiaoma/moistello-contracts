@@ -3,15 +3,24 @@
 mod contract;
 #[cfg(test)]
 mod test;
-mod types;
+pub mod types;
 
 use crate::types::{AllowanceData, TokenError};
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, Address, Env, MuxedAddress, String};
 
 /// # Governance Token Contract
 ///
-/// ERC-20 compatible token with governance features (mint, burn, freeze, allowlist).
-/// Used for voting power in Moistello governance.
+/// SEP-41 (Stellar Token Interface) compatible governance token with extra
+/// administrative controls: mint, burn, clawback, freeze/unfreeze and
+/// allowlist mode. Used for voting power in Moistello governance.
+///
+/// The token surface follows SEP-41: `balance`, `allowance`, `approve`,
+/// `transfer`, `transfer_from`, `burn`, `burn_from`, `decimals`, `name` and
+/// `symbol` use the canonical names, arguments and semantics, and the token
+/// emits the canonical Stellar token events through `soroban-token-sdk`.
+/// Governance-only extensions (`mint`, `clawback`, `admin_burn_from`,
+/// `allowance_data`, `total_supply`, freeze/allowlist/pause controls) are
+/// layered on top.
 ///
 /// ## Example: Initialize the token
 ///
@@ -35,13 +44,13 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String};
 /// ## Example: Transfer tokens
 ///
 /// ```no_run
-/// use soroban_sdk::{Address, Env, String};
+/// use soroban_sdk::{Address, Env, MuxedAddress, String};
 /// use governance_token::GovernanceTokenClient;
 ///
 /// let env = Env::default();
 /// let token_id = Address::from_string(&soroban_sdk::String::from_str(&env, "GATOKEN..."));
 /// let from = Address::from_string(&soroban_sdk::String::from_str(&env, "GAFROM..."));
-/// let to = Address::from_string(&soroban_sdk::String::from_str(&env, "GATO..."));
+/// let to = MuxedAddress::from(Address::from_string(&soroban_sdk::String::from_str(&env, "GATO...")));
 /// let amount = 100_0000000i128;
 ///
 /// let client = GovernanceTokenClient::new(&env, &token_id);
@@ -172,10 +181,19 @@ impl GovernanceToken {
         contract::initialize(&env, &admin, &name, &symbol, decimals)
     }
 
-    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> Result<(), TokenError> {
+    /// SEP-41 `transfer`: sends `amount` from `from` to the (possibly muxed)
+    /// `to` address.
+    pub fn transfer(
+        env: Env,
+        from: Address,
+        to: MuxedAddress,
+        amount: i128,
+    ) -> Result<(), TokenError> {
         contract::transfer(&env, &from, &to, amount)
     }
 
+    /// SEP-41 `transfer_from`: `spender` moves `amount` out of `from`'s
+    /// balance, consuming its allowance.
     pub fn transfer_from(
         env: Env,
         spender: Address,
@@ -186,6 +204,7 @@ impl GovernanceToken {
         contract::transfer_from(&env, &spender, &from, &to, amount)
     }
 
+    /// SEP-41 `approve`: overwrites `spender`'s allowance on `from`.
     pub fn approve(
         env: Env,
         owner: Address,
@@ -196,12 +215,22 @@ impl GovernanceToken {
         contract::approve(&env, &owner, &spender, amount, expiration_ledger)
     }
 
+    /// SEP-41 `balance`: the amount of tokens held by `account`.
     pub fn balance(env: Env, account: Address) -> i128 {
         contract::balance(&env, &account)
     }
 
-    pub fn allowance(env: Env, owner: Address, spender: Address) -> AllowanceData {
+    /// SEP-41 `allowance`: the amount `spender` may still spend from `owner`.
+    ///
+    /// Expired allowances are reported as zero, as mandated by SEP-41.
+    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
         contract::allowance(&env, &owner, &spender)
+    }
+
+    /// Governance extension: the raw allowance record, including the ledger at
+    /// which the allowance expires.
+    pub fn allowance_data(env: Env, owner: Address, spender: Address) -> AllowanceData {
+        contract::allowance_data(&env, &owner, &spender)
     }
 
     pub fn total_supply(env: Env) -> i128 {
@@ -224,8 +253,30 @@ impl GovernanceToken {
         contract::mint(&env, &admin, &to, amount)
     }
 
+    /// SEP-41 `burn`: burns `amount` from `from`'s balance.
     pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), TokenError> {
         contract::burn(&env, &from, amount)
+    }
+
+    /// SEP-41 `burn_from`: burns `amount` from `from`, consuming `spender`'s
+    /// allowance.
+    pub fn burn_from(
+        env: Env,
+        spender: Address,
+        from: Address,
+        amount: i128,
+    ) -> Result<(), TokenError> {
+        contract::burn_from(&env, &spender, &from, amount)
+    }
+
+    /// Admin-authorized burn (does not consume an allowance).
+    pub fn admin_burn_from(
+        env: Env,
+        admin: Address,
+        from: Address,
+        amount: i128,
+    ) -> Result<(), TokenError> {
+        contract::admin_burn_from(&env, &admin, &from, amount)
     }
 
     pub fn clawback(
@@ -235,16 +286,6 @@ impl GovernanceToken {
         amount: i128,
     ) -> Result<(), TokenError> {
         contract::clawback(&env, &admin, &from, amount)
-    }
-
-    /// #518 — Admin-authorized burn function
-    pub fn burn_from(
-        env: Env,
-        admin: Address,
-        from: Address,
-        amount: i128,
-    ) -> Result<(), TokenError> {
-        contract::burn_from(&env, &admin, &from, amount)
     }
 
     pub fn freeze(env: Env, admin: Address, account: Address) -> Result<(), TokenError> {

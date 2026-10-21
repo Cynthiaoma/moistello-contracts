@@ -138,21 +138,13 @@
                   "storage": [
                     {
                       "key": {
-                        "symbol": "admin"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "meta"
+                        "symbol": "METADATA"
                       },
                       "val": {
                         "map": [
                           {
                             "key": {
-                              "symbol": "decimals"
+                              "symbol": "decimal"
                             },
                             "val": {
                               "u32": 7
@@ -175,6 +167,14 @@
                             }
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "admin"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                       }
                     },
                     {
