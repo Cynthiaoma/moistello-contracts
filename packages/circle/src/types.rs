@@ -217,6 +217,14 @@ pub enum DataKey {
     /// The entry is only created for rounds in which a strike actually
     /// happened, so a well-behaved circle never pays for it.
     RoundStrikes(u32),
+    /// #406: Pre-computed total tokens contributed for `round` (write-time optimization).
+    RoundTotalContributed(u32),
+    /// #406: Pre-computed list of contributors for `round` (write-time optimization).
+    RoundContributors(u32),
+    /// #406: O(1) single-entry contribution flag per member per round.
+    MemberContributed(Address, u32),
+    /// #406: O(1) member status lookup avoiding full Vec<Member> deserialization.
+    MemberStatus(Address),
 }
 pub use common::types::ErrorEnvelope;
 #[contracterror]

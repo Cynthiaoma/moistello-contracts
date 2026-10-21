@@ -82,6 +82,10 @@ Persistent unless noted:
 | `WithdrawalDay` / `WithdrawalAmount` | #478 treasury withdrawal window tracking |
 | `RoundEnforced` | #325 last round swept by deadline check |
 | `RoundStrikes(u32)` | #503 strikes recorded per round |
+| `RoundTotalContributed(u32)` | #406 pre-computed round contribution total |
+| `RoundContributors(u32)` | #406 pre-computed round contributors list |
+| `MemberContributed(Address, u32)` | #406 O(1) single-entry contribution flag |
+| `MemberStatus(Address)` | #406 O(1) member status lookup |
 
 ## Events
 
