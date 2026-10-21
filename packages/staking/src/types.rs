@@ -33,7 +33,11 @@ impl StakingPeriod {
         }
     }
 
-    /// Validates the period value and returns the corresponding StakingPeriod
+    /// Parses a month count into a [`StakingPeriod`].
+    ///
+    /// Valid values: `1`, `3`, `6`, or `12` months.
+    /// Returns [`None`] for any other value; callers should map this to
+    /// [`StakingError::InvalidPeriod`] with `.ok_or(StakingError::InvalidPeriod)`.
     pub fn from_u32(value: u32) -> Option<Self> {
         match value {
             1 => Some(StakingPeriod::OneMonth),
@@ -115,6 +119,7 @@ pub enum StakingError {
     Unauthorized = 101,
     ContractPaused = 102,
     InvalidAmount = 103,
+    /// Returned when `period_months` is not one of the valid values: 1, 3, 6, or 12.
     InvalidPeriod = 104,
     TokenError = 105,
     InsufficientBalance = 106,

@@ -349,14 +349,16 @@ pub fn deploy_circle(env: &Env, config: &CircleConfig) -> Result<Address, Factor
     env.storage()
         .persistent()
         .set(&DataKey::CircleList, &circles);
-    let c: u32 = env
+    let new_count = env
         .storage()
         .instance()
-        .get(&DataKey::CircleCount)
-        .unwrap_or(0);
+        .get::<DataKey, u32>(&DataKey::CircleCount)
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(FactoryError::InvalidConfig)?;
     env.storage()
         .instance()
-        .set(&DataKey::CircleCount, &c.checked_add(1).ok_or(FactoryError::InvalidConfig)?);
+        .set(&DataKey::CircleCount, &new_count);
     env.events().publish(
         (env.current_contract_address(), symbol_short!("deploy")),
         CircleDeployed {

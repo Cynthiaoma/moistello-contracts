@@ -1,9 +1,14 @@
 use soroban_sdk::{contracttype, Address, String};
 
+/// Circle configuration shared across circle-factory and circle contracts.
+///
+/// Consolidated from the factory-local `CircleConfig` to eliminate duplication (#303).
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct CircleConfig {
     pub organizer: Address,
+    /// The token used for contributions and payouts within this circle.
+    pub token: Address,
     pub name: String,
     pub contribution_amount: i128,
     pub max_members: u32,

@@ -82,8 +82,18 @@ pub struct AllowlistAdded {
     pub account: Address,
 }
 
+
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AllowlistRemoved {
     pub account: Address,
+}
+
+/// Event emitted when the contract admin is changed via set_admin
+#[contractevent(topics = ["admin_changed"])]
+#[derive(Clone, Debug)]
+pub struct AdminChanged {
+    #[topic]
+    pub old_admin: Address,
+    pub new_admin: Address,
 }
