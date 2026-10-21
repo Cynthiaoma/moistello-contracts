@@ -174,6 +174,39 @@ mod tests {
             .is_ok());
     }
 
+    /// #406: Verifies that contribute gas consumption is within the 80,000 budget.
+    #[test]
+    fn test_contribute_gas_budget() {
+        let env = Env::default();
+        let mut config = create_config(&env);
+        config.max_members = 2u32;
+        let _admin = config.organizer.clone();
+
+        let (token, client) = setup_test_env(&env, &mut config);
+
+        let member = Address::generate(&env);
+        let other = Address::generate(&env);
+
+        env.mock_all_auths();
+        mint_tokens(&env, &token, &member, 100000_0000000);
+        client.try_join(&member).unwrap().unwrap();
+        mint_tokens(&env, &token, &other, 100000_0000000);
+        client.try_join(&other).unwrap().unwrap();
+
+        // Reset tracker to measure the contribute call isolation
+        env.cost_estimate().budget().reset_tracker();
+
+        let result = client.try_contribute(&member, &config.contribution_amount, &0u32);
+        assert!(result.is_ok());
+
+        let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+        assert!(
+            cpu < 80_000,
+            "Contribute gas usage {} exceeded maximum budget of 80,000 CPU instructions",
+            cpu
+        );
+    }
+
     #[test]
     fn test_contribute_wrong_amount() {
         let env = Env::default();

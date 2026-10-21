@@ -218,6 +218,10 @@ pub fn join(env: &Env, member: &Address) -> Result<(), CircleError> {
     }
     env.storage().instance().set(&DataKey::Circle, &circle);
     env.storage().persistent().set(&DataKey::Members, &members);
+    // #406: Record member status in persistent storage for O(1) lookup
+    env.storage()
+        .persistent()
+        .set(&DataKey::MemberStatus(member.clone()), &MEMBER_ACTIVE);
     env.events().publish(
         (env.current_contract_address(), symbol_short!("joined")),
         MemberJoined {
@@ -233,12 +237,16 @@ pub fn join(env: &Env, member: &Address) -> Result<(), CircleError> {
 
 /// Addresses that recorded a contribution for `round`.
 ///
-/// Derived from the canonical `Contributions` log rather than the
-/// `(Address, u32) -> bool` map `contribute` also maintains. Both are correct,
-/// but the payout path already has `Contributions` in its footprint, so reading
-/// it costs no extra ledger entry — and the payout path is close to the
-/// invocation ledger-entry budget on long-running circles.
+/// Pre-computed at write-time during `contribute` under `DataKey::RoundContributors(round)`
+/// for O(1) retrieval (#406). Falls back to the canonical `Contributions` log if not pre-computed.
 fn round_contributors(env: &Env, round: u32) -> Vec<Address> {
+    if let Some(contributors) = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RoundContributors(round))
+    {
+        return contributors;
+    }
     let contributions: Vec<Contribution> = env
         .storage()
         .persistent()
@@ -257,14 +265,16 @@ fn round_contributors(env: &Env, round: u32) -> Vec<Address> {
 
 /// Total tokens actually contributed for `round`.
 ///
-/// `trigger_payout_internal` previously sized the pool as
-/// `contribution_amount * member_count`, which silently assumed a fully
-/// funded round. That is exactly what breaks #325: once the window shuts and a
-/// member defaults, the circle holds less than the pool implies and settlement
-/// fails on insufficient balance, leaving the round wedged. For a fully funded
-/// round the two values are identical, so this only changes the under-funded
-/// case.
+/// Pre-computed at write-time during `contribute` under `DataKey::RoundTotalContributed(round)`
+/// for O(1) retrieval (#406). Falls back to deriving from `Contributions` if not pre-computed.
 fn round_contributed_total(env: &Env, round: u32) -> i128 {
+    if let Some(total) = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RoundTotalContributed(round))
+    {
+        return total;
+    }
     let contributions: Vec<Contribution> = env
         .storage()
         .persistent()
@@ -468,6 +478,10 @@ fn strike_non_contributors(
         if updated.strikes >= circle.max_strikes {
             updated.status = MEMBER_DEFAULTED;
             scoring::record_default(env, &updated.address);
+            // #406: Update O(1) member status lookup
+            env.storage()
+                .persistent()
+                .set(&DataKey::MemberStatus(updated.address.clone()), &MEMBER_DEFAULTED);
         }
         // #503: the strike is recorded against the round it was earned in, so
         // the member cannot re-enter that round afterwards.
@@ -544,51 +558,61 @@ pub fn contribute(
     if amount != circle.contribution_amount {
         return Err(CircleError::ContributionMismatch);
     }
-    let members: Vec<Member> = env
+    // #406: Fast O(1) member status check avoiding full Vec<Member> deserialization
+    if let Some(status) = env
         .storage()
         .persistent()
-        .get(&DataKey::Members)
-        .ok_or(CircleError::NotInitialized)?;
-    let mut found = false;
-    for i in 0..members.len() {
-        let m = members.get(i).ok_or(CircleError::VecAccessError)?;
-        if m.address == *member {
-            if m.status != MEMBER_ACTIVE {
-                return Err(CircleError::InvalidMemberStatus);
-            }
-            found = true;
+        .get::<DataKey, u32>(&DataKey::MemberStatus(member.clone()))
+    {
+        if status != MEMBER_ACTIVE {
+            return Err(CircleError::InvalidMemberStatus);
         }
+    } else {
+        let members: Vec<Member> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Members)
+            .ok_or(CircleError::NotInitialized)?;
+        let mut found = false;
+        for i in 0..members.len() {
+            let m = members.get(i).ok_or(CircleError::VecAccessError)?;
+            if m.address == *member {
+                if m.status != MEMBER_ACTIVE {
+                    return Err(CircleError::InvalidMemberStatus);
+                }
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(CircleError::NotMember);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::MemberStatus(member.clone()), &MEMBER_ACTIVE);
     }
-    if !found {
-        return Err(CircleError::NotMember);
+    // #406: Fast O(1) single-entry contribution duplicate check
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::MemberContributed(member.clone(), round))
+    {
+        return Err(CircleError::AlreadyContributed);
+    }
+    if let Some(contrib_map) = env
+        .storage()
+        .persistent()
+        .get::<Symbol, Map<(Address, u32), bool>>(&symbol_short!("contribs"))
+    {
+        if contrib_map.get((member.clone(), round)).unwrap_or(false) {
+            return Err(CircleError::AlreadyContributed);
+        }
     }
     let mut contributions: Vec<Contribution> = env
         .storage()
         .persistent()
         .get(&DataKey::Contributions)
         .unwrap_or_else(|| Vec::new(env));
-    let mut contribution_map: Map<(Address, u32), bool> = env
-        .storage()
-        .persistent()
-        .get(&symbol_short!("contribs"))
-        .unwrap_or_else(|| {
-            let mut m = Map::new(env);
-            for i in 0..contributions.len() {
-                if let Some(c) = contributions.get(i) {
-                    m.set((c.member.clone(), c.round), true);
-                }
-            }
-            env.storage()
-                .persistent()
-                .set(&symbol_short!("contribs"), &m);
-            m
-        });
-    if contribution_map
-        .get((member.clone(), round))
-        .unwrap_or(false)
-    {
-        return Err(CircleError::AlreadyContributed);
-    }
     let now = env.ledger().timestamp();
     let on_time = if circle.contribution_deadline_seconds > 0 {
         let deadline = circle
@@ -653,10 +677,38 @@ pub fn contribute(
     env.storage()
         .persistent()
         .set(&DataKey::Contributions, &contributions);
-    contribution_map.set((member.clone(), round), true);
+    // #406: Fast O(1) single-entry contribution record
     env.storage()
         .persistent()
-        .set(&symbol_short!("contribs"), &contribution_map);
+        .set(&DataKey::MemberContributed(member.clone(), round), &true);
+    // #406: Pre-compute derived values at write time
+    let prev_total: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RoundTotalContributed(round))
+        .unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RoundTotalContributed(round), &prev_total.saturating_add(amount));
+    let mut round_contribs: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RoundContributors(round))
+        .unwrap_or_else(|| Vec::new(env));
+    round_contribs.push_back(member.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::RoundContributors(round), &round_contribs);
+    if let Some(mut contrib_map) = env
+        .storage()
+        .persistent()
+        .get::<Symbol, Map<(Address, u32), bool>>(&symbol_short!("contribs"))
+    {
+        contrib_map.set((member.clone(), round), true);
+        env.storage()
+            .persistent()
+            .set(&symbol_short!("contribs"), &contrib_map);
+    }
     env.events().publish(
         (env.current_contract_address(), symbol_short!("contrib")),
         ContributionRecorded {
@@ -1641,6 +1693,10 @@ pub fn exit(env: &Env, member: &Address) -> Result<(), CircleError> {
         }
     }
     env.storage().persistent().set(&DataKey::Members, &members);
+    // #406: Update O(1) member status lookup
+    env.storage()
+        .persistent()
+        .set(&DataKey::MemberStatus(member.clone()), &MEMBER_EXITED);
     if circle.collateral_amount > 0 {
         let token_client = soroban_sdk::token::Client::new(env, &circle.token);
         token_client.transfer(&circle.id, member, &circle.collateral_amount);
@@ -1729,6 +1785,10 @@ pub fn report_late(
             if m.strikes >= circle.max_strikes {
                 m.status = MEMBER_DEFAULTED;
                 scoring::record_default(env, &m.address);
+                // #406: Update O(1) member status lookup
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::MemberStatus(late_member.clone()), &MEMBER_DEFAULTED);
                 env.events().publish(
                     (env.current_contract_address(), symbol_short!("default")),
                     MemberDefaulted {
@@ -2401,6 +2461,14 @@ pub fn batch_invite(
     env.storage()
         .persistent()
         .set(&DataKey::Members, &members_vec);
+    // #406: Record member status in persistent storage for O(1) lookup
+    for mi in 0..members.len() {
+        if let Some(m) = members.get(mi) {
+            env.storage()
+                .persistent()
+                .set(&DataKey::MemberStatus(m.clone()), &MEMBER_ACTIVE);
+        }
+    }
     let circle_status = circle.status;
     let member_count = members_vec.len() as u32;
     let max_members = circle.max_members;

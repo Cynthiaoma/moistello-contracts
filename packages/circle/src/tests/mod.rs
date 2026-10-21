@@ -13,6 +13,9 @@ mod test_stress;
 mod test_invariants;
 
 #[cfg(test)]
+mod test_gas_budget;
+
+#[cfg(test)]
 mod tests {
     use soroban_sdk::{Address, Env};
 
