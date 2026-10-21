@@ -1,15 +1,33 @@
-use soroban_sdk::{contracterror, contractevent, contracttype, Address, String};
+use soroban_sdk::{contracterror, contractevent, contracttype, Address};
 
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct TokenMetadata {
-    pub name: String,
-    pub symbol: String,
-    pub decimals: u32,
-}
+/// Canonical Stellar token events, re-exported from `soroban-token-sdk`.
+///
+/// The governance token emits the very same event shapes as the Stellar Asset
+/// Contract (SAC) so that standard indexers — and the Go backend — can decode
+/// governance-token activity with the exact same logic they use for SAC
+/// assets:
+///
+/// | Event                  | Topics                        | Data                                |
+/// |------------------------|-------------------------------|-------------------------------------|
+/// | `transfer`             | `("transfer", from, to)`      | `{ amount, to_muxed_id }` (map)     |
+/// | `TransferWithAmountOnly` | `("transfer", from, to)`    | `amount` (single value)             |
+/// | `approve`              | `("approve", from, spender)`  | `[amount, expiration_ledger]` (vec) |
+/// | `mint`                 | `("mint", to)`                | `{ amount, to_muxed_id }` (map)     |
+/// | `MintWithAmountOnly`   | `("mint", to)`                | `amount` (single value)             |
+/// | `burn`                 | `("burn", from)`              | `amount` (single value)             |
+/// | `clawback`             | `("clawback", from)`          | `amount` (single value)             |
+pub use soroban_token_sdk::events::{
+    Approve, Burn, Clawback, Mint, MintWithAmountOnly, Transfer, TransferWithAmountOnly,
+};
 
+/// Raw allowance record for an `(owner, spender)` pair.
+///
+/// `expiration_ledger` is the ledger at which the allowance stops being
+/// spendable. `0` means "never expires" (a documented deviation from the
+/// strict SEP-41 wording, kept for backwards compatibility with the Go
+/// backend, which has always used `0` for non-expiring allowances).
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllowanceData {
     pub amount: i128,
     pub expiration_ledger: u32,
@@ -31,45 +49,13 @@ pub enum TokenError {
     Underflow = 11,
     Frozen = 12,
     RecipientNotAllowlisted = 13,
+    /// `expiration_ledger` is in the past while a non-zero allowance was set.
+    ///
+    /// SEP-41 requires the expiration ledger of a live allowance to be at or
+    /// after the current ledger; only a zero (revoking) allowance may point
+    /// into the past.
+    InvalidExpirationLedger = 14,
     CannotTransferToSelf = 16,
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct Transfer {
-    pub from: Address,
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct Approve {
-    pub owner: Address,
-    pub spender: Address,
-    pub amount: i128,
-    pub expiration_ledger: u32,
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct Mint {
-    pub to: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct Burn {
-    pub from: Address,
-    pub amount: i128,
-}
-
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct Clawback {
-    pub from: Address,
-    pub amount: i128,
 }
 
 #[contractevent]

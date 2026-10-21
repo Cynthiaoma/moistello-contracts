@@ -412,29 +412,13 @@
                   "storage": [
                     {
                       "key": {
-                        "symbol": "admin"
-                      },
-                      "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "alw_mode"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "meta"
+                        "symbol": "METADATA"
                       },
                       "val": {
                         "map": [
                           {
                             "key": {
-                              "symbol": "decimals"
+                              "symbol": "decimal"
                             },
                             "val": {
                               "u32": 7
@@ -457,6 +441,22 @@
                             }
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "admin"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "alw_mode"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {

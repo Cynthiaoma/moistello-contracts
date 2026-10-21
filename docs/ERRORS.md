@@ -87,6 +87,8 @@ pub struct ErrorEnvelope {
 | 10 | `ContractPaused` | Operations paused |
 | 11 | `Underflow` | Numeric subtraction underflow |
 | 12 | `Frozen` | Account is frozen by admin |
+| 13 | `RecipientNotAllowlisted` | Transfer recipient is not on the allowlist while allowlist mode is on |
+| 14 | `InvalidExpirationLedger` | Live allowance expiry ledger is in the past (SEP-41) |
 | 16 | `CannotTransferToSelf` | Transfer, transfer_from, or mint to token contract address rejected |
 
 ---

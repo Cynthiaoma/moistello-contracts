@@ -1,9 +1,13 @@
 use crate::types::*;
 use common::pause;
-use soroban_sdk::{symbol_short, Address, Env, Map, String};
+use soroban_sdk::{symbol_short, Address, Env, Map, MuxedAddress, String};
+use soroban_token_sdk::events::{
+    Approve, Burn, Clawback, MintWithAmountOnly, Transfer, TransferWithAmountOnly,
+};
+use soroban_token_sdk::metadata::TokenMetadata;
+use soroban_token_sdk::TokenUtils;
 
 const ADMIN_KEY: soroban_sdk::Symbol = symbol_short!("admin");
-const META_KEY: soroban_sdk::Symbol = symbol_short!("meta");
 const BALANCES_KEY: soroban_sdk::Symbol = symbol_short!("bal");
 const ALLOWANCES_KEY: soroban_sdk::Symbol = symbol_short!("alw");
 const TOTAL_KEY: soroban_sdk::Symbol = symbol_short!("total");
@@ -11,6 +15,12 @@ const FROZEN_KEY: soroban_sdk::Symbol = symbol_short!("frz");
 const ALLOWLIST_MODE_KEY: soroban_sdk::Symbol = symbol_short!("alw_mode");
 const ALLOWLIST_KEY: soroban_sdk::Symbol = symbol_short!("alw_list");
 
+/// Initializes the token: sets the admin, the canonical token metadata and
+/// the (empty) balance / allowance / freeze registries.
+///
+/// The metadata is stored through `soroban-token-sdk`'s [`TokenUtils`], i.e.
+/// in the standard `METADATA` instance entry, so the token is laid out exactly
+/// like every other SEP-41 token.
 pub fn initialize(
     env: &Env,
     admin: &Address,
@@ -22,14 +32,13 @@ pub fn initialize(
         return Err(TokenError::NotInitialized);
     }
     env.storage().instance().set(&ADMIN_KEY, admin);
-    env.storage().instance().set(
-        &META_KEY,
-        &TokenMetadata {
+    TokenUtils::new(env)
+        .metadata()
+        .set_metadata(&TokenMetadata {
+            decimal: decimals,
             name: name.clone(),
             symbol: symbol.clone(),
-            decimals,
-        },
-    );
+        });
     env.storage().instance().set(&TOTAL_KEY, &0i128);
     env.storage()
         .persistent()
@@ -43,15 +52,27 @@ pub fn initialize(
     Ok(())
 }
 
-pub fn transfer(env: &Env, from: &Address, to: &Address, amount: i128) -> Result<(), TokenError> {
+/// Transfers `amount` from `from` to `to`.
+///
+/// `to` is a [`MuxedAddress`], as mandated by SEP-41. The balance is credited
+/// to the underlying account (`to.address()`); when the muxed address carries
+/// an id, the id is published in the `transfer` event so that the recipient
+/// can be reconstructed by indexers.
+pub fn transfer(
+    env: &Env,
+    from: &Address,
+    to: &MuxedAddress,
+    amount: i128,
+) -> Result<(), TokenError> {
     pause::when_not_paused(env).map_err(|_| TokenError::ContractPaused)?;
     from.require_auth();
-    if to == &env.current_contract_address() {
+    let recipient = to.address();
+    if recipient == env.current_contract_address() {
         return Err(TokenError::CannotTransferToSelf);
     }
     validate_non_frozen(env, from)?;
-    validate_non_frozen(env, to)?;
-    validate_allowlisted(env, to)?;
+    validate_non_frozen(env, &recipient)?;
+    validate_allowlisted(env, &recipient)?;
     if amount <= 0 {
         return Err(TokenError::InvalidAmount);
     }
@@ -70,18 +91,17 @@ pub fn transfer(env: &Env, from: &Address, to: &Address, amount: i128) -> Result
             .checked_sub(amount)
             .ok_or(TokenError::Underflow)?,
     );
-    let to_balance: i128 = balances.get(to.clone()).unwrap_or(0);
-    balances.set(to.clone(), to_balance.checked_add(amount).ok_or(TokenError::Overflow)?);
+    let to_balance: i128 = balances.get(recipient.clone()).unwrap_or(0);
+    balances.set(recipient.clone(), to_balance.checked_add(amount).ok_or(TokenError::Overflow)?);
     env.storage().persistent().set(&BALANCES_KEY, &balances);
-    Transfer {
-        from: from.clone(),
-        to: to.clone(),
-        amount,
-    }
-    .publish(env);
+    publish_transfer(env, from, to, amount);
     Ok(())
 }
 
+/// Transfers `amount` from `from` to `to`, consuming `spender`'s allowance.
+///
+/// The allowance is reduced by `amount` and its expiration ledger is left
+/// untouched, as required by SEP-41.
 pub fn transfer_from(
     env: &Env,
     spender: &Address,
@@ -100,37 +120,7 @@ pub fn transfer_from(
     if amount <= 0 {
         return Err(TokenError::InvalidAmount);
     }
-    let allowances: Map<(Address, Address), AllowanceData> = env
-        .storage()
-        .persistent()
-        .get(&ALLOWANCES_KEY)
-        .ok_or(TokenError::NotInitialized)?;
-    let key = (from.clone(), spender.clone());
-    let allowance: AllowanceData = allowances
-        .get(key.clone())
-        .ok_or(TokenError::Unauthorized)?;
-    let current_ledger: u32 = env.ledger().sequence();
-    if allowance.expiration_ledger != 0 && current_ledger > allowance.expiration_ledger {
-        return Err(TokenError::AllowanceExpired);
-    }
-    if allowance.amount < amount {
-        return Err(TokenError::AllowanceExceeded);
-    }
-    let mut allowances_mut = allowances;
-    let new_allowance = allowance
-        .amount
-        .checked_sub(amount)
-        .ok_or(TokenError::Underflow)?;
-    allowances_mut.set(
-        key,
-        AllowanceData {
-            amount: new_allowance,
-            expiration_ledger: allowance.expiration_ledger,
-        },
-    );
-    env.storage()
-        .persistent()
-        .set(&ALLOWANCES_KEY, &allowances_mut);
+    consume_allowance(env, from, spender, amount)?;
     let mut balances: Map<Address, i128> = env
         .storage()
         .persistent()
@@ -149,7 +139,7 @@ pub fn transfer_from(
     let to_balance: i128 = balances.get(to.clone()).unwrap_or(0);
     balances.set(to.clone(), to_balance.checked_add(amount).ok_or(TokenError::Overflow)?);
     env.storage().persistent().set(&BALANCES_KEY, &balances);
-    Transfer {
+    TransferWithAmountOnly {
         from: from.clone(),
         to: to.clone(),
         amount,
@@ -158,6 +148,11 @@ pub fn transfer_from(
     Ok(())
 }
 
+/// Sets (overwrites) the allowance `spender` may spend from `from`'s balance.
+///
+/// Per SEP-41 the new allowance *replaces* the previous one — it is never
+/// added to it — and an allowance is a spending limit, not a reservation of
+/// balance. A zero amount revokes the allowance.
 pub fn approve(
     env: &Env,
     owner: &Address,
@@ -167,13 +162,14 @@ pub fn approve(
 ) -> Result<(), TokenError> {
     pause::when_not_paused(env).map_err(|_| TokenError::ContractPaused)?;
     owner.require_auth();
-    // Reject negative amounts and zero amounts (#257)
-    // Zero-approval wastes storage; use it only to revoke allowances
+    // Reject negative amounts (#257)
     if amount < 0 {
         return Err(TokenError::InvalidAmount);
     }
-    if amount == 0 && expiration_ledger > 0 {
-        return Err(TokenError::InvalidAmount);
+    // SEP-41: a live allowance may not expire in the past. A zero allowance
+    // is a revocation and is always accepted.
+    if amount > 0 && !is_expiration_valid(env, expiration_ledger) {
+        return Err(TokenError::InvalidExpirationLedger);
     }
     let mut allowances: Map<(Address, Address), AllowanceData> = env
         .storage()
@@ -190,7 +186,7 @@ pub fn approve(
     );
     env.storage().persistent().set(&ALLOWANCES_KEY, &allowances);
     Approve {
-        owner: owner.clone(),
+        from: owner.clone(),
         spender: spender.clone(),
         amount,
         expiration_ledger,
@@ -199,16 +195,24 @@ pub fn approve(
     Ok(())
 }
 
-pub fn balance(env: &Env, account: &Address) -> i128 {
-    let balances: Map<Address, i128> = env
-        .storage()
-        .persistent()
-        .get(&BALANCES_KEY)
-        .unwrap_or_else(|| Map::new(env));
-    balances.get(account.clone()).unwrap_or(0)
+/// Returns the amount `spender` may still transfer from `from`.
+///
+/// SEP-41 requires an expired allowance to be reported as a zero allowance.
+pub fn allowance(env: &Env, owner: &Address, spender: &Address) -> i128 {
+    let data = allowance_data(env, owner, spender);
+    if is_expired(env, &data) {
+        0
+    } else {
+        data.amount
+    }
 }
 
-pub fn allowance(env: &Env, owner: &Address, spender: &Address) -> AllowanceData {
+/// Returns the raw allowance record, including the expiration ledger.
+///
+/// `allowance` is the SEP-41 view (expired allowances read as zero); this
+/// extension exposes the stored record for UIs that need to render when the
+/// allowance lapses.
+pub fn allowance_data(env: &Env, owner: &Address, spender: &Address) -> AllowanceData {
     let allowances: Map<(Address, Address), AllowanceData> = env
         .storage()
         .persistent()
@@ -221,47 +225,38 @@ pub fn allowance(env: &Env, owner: &Address, spender: &Address) -> AllowanceData
     })
 }
 
+pub fn balance(env: &Env, account: &Address) -> i128 {
+    let balances: Map<Address, i128> = env
+        .storage()
+        .persistent()
+        .get(&BALANCES_KEY)
+        .unwrap_or_else(|| Map::new(env));
+    balances.get(account.clone()).unwrap_or(0)
+}
+
 pub fn total_supply(env: &Env) -> i128 {
     env.storage().instance().get(&TOTAL_KEY).unwrap_or(0)
 }
 
 pub fn name(env: &Env) -> String {
-    let meta: TokenMetadata = env
-        .storage()
-        .instance()
-        .get(&META_KEY)
-        .unwrap_or(TokenMetadata {
-            name: String::from_str(env, ""),
-            symbol: String::from_str(env, ""),
-            decimals: 0,
-        });
-    meta.name
+    if !is_initialized(env) {
+        return String::from_str(env, "");
+    }
+    TokenUtils::new(env).metadata().get_metadata().name
 }
 
 pub fn symbol(env: &Env) -> String {
-    let meta: TokenMetadata = env
-        .storage()
-        .instance()
-        .get(&META_KEY)
-        .unwrap_or(TokenMetadata {
-            name: String::from_str(env, ""),
-            symbol: String::from_str(env, ""),
-            decimals: 0,
-        });
-    meta.symbol
+    if !is_initialized(env) {
+        return String::from_str(env, "");
+    }
+    TokenUtils::new(env).metadata().get_metadata().symbol
 }
 
 pub fn decimals(env: &Env) -> u32 {
-    let meta: TokenMetadata = env
-        .storage()
-        .instance()
-        .get(&META_KEY)
-        .unwrap_or(TokenMetadata {
-            name: String::from_str(env, ""),
-            symbol: String::from_str(env, ""),
-            decimals: 0,
-        });
-    meta.decimals
+    if !is_initialized(env) {
+        return 0;
+    }
+    TokenUtils::new(env).metadata().get_metadata().decimal
 }
 
 pub fn mint(env: &Env, admin: &Address, to: &Address, amount: i128) -> Result<(), TokenError> {
@@ -287,7 +282,7 @@ pub fn mint(env: &Env, admin: &Address, to: &Address, amount: i128) -> Result<()
     env.storage()
         .instance()
         .set(&TOTAL_KEY, &total.checked_add(amount).ok_or(TokenError::Overflow)?);
-    Mint {
+    MintWithAmountOnly {
         to: to.clone(),
         amount,
     }
@@ -325,11 +320,39 @@ pub fn burn(env: &Env, from: &Address, amount: i128) -> Result<(), TokenError> {
     Ok(())
 }
 
-/// #518 — Admin-authorized burn (distinct from holder burn).
+/// Burns `amount` from `from`, consuming `spender`'s allowance.
+///
+/// SEP-41 `burn_from`: the allowance is reduced by `amount` and its expiration
+/// ledger is left untouched. Use [`admin_burn_from`] for the administrative
+/// variant that does not require an allowance.
+pub fn burn_from(
+    env: &Env,
+    spender: &Address,
+    from: &Address,
+    amount: i128,
+) -> Result<(), TokenError> {
+    pause::when_not_paused(env).map_err(|_| TokenError::ContractPaused)?;
+    spender.require_auth();
+    if amount <= 0 {
+        return Err(TokenError::InvalidAmount);
+    }
+    validate_non_frozen(env, from)?;
+    consume_allowance(env, from, spender, amount)?;
+    burn_balance(env, from, amount)?;
+    Burn {
+        from: from.clone(),
+        amount,
+    }
+    .publish(env);
+    Ok(())
+}
+
+/// Admin-authorized burn (distinct from holder burn and from the SEP-41
+/// allowance-consuming `burn_from`).
 ///
 /// Allows admin to burn tokens from any account. Emits `Burn` event.
 /// Requires admin authorization and validates total supply invariant.
-pub fn burn_from(
+pub fn admin_burn_from(
     env: &Env,
     admin: &Address,
     from: &Address,
@@ -342,23 +365,7 @@ pub fn burn_from(
     if amount <= 0 {
         return Err(TokenError::InvalidAmount);
     }
-    let mut balances: Map<Address, i128> = env
-        .storage()
-        .persistent()
-        .get(&BALANCES_KEY)
-        .ok_or(TokenError::NotInitialized)?;
-    let current: i128 = balances.get(from.clone()).unwrap_or(0);
-    if current < amount {
-        return Err(TokenError::InsufficientBalance);
-    }
-    balances.set(from.clone(), current.checked_sub(amount).ok_or(TokenError::Underflow)?);
-    env.storage().persistent().set(&BALANCES_KEY, &balances);
-
-    // Invariant: total supply decreases by exactly burned amount
-    let total: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
-    let new_total = total.checked_sub(amount).ok_or(TokenError::Underflow)?;
-    env.storage().instance().set(&TOTAL_KEY, &new_total);
-
+    burn_balance(env, from, amount)?;
     Burn {
         from: from.clone(),
         amount,
@@ -388,21 +395,7 @@ pub fn clawback(
     if amount <= 0 {
         return Err(TokenError::InvalidAmount);
     }
-    let mut balances: Map<Address, i128> = env
-        .storage()
-        .persistent()
-        .get(&BALANCES_KEY)
-        .ok_or(TokenError::NotInitialized)?;
-    let current: i128 = balances.get(from.clone()).unwrap_or(0);
-    if current < amount {
-        return Err(TokenError::InsufficientBalance);
-    }
-    balances.set(from.clone(), current.checked_sub(amount).ok_or(TokenError::Underflow)?);
-    env.storage().persistent().set(&BALANCES_KEY, &balances);
-    let total: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
-    env.storage()
-        .instance()
-        .set(&TOTAL_KEY, &total.checked_sub(amount).ok_or(TokenError::Underflow)?);
+    burn_balance(env, from, amount)?;
     Clawback {
         from: from.clone(),
         amount,
@@ -598,4 +591,107 @@ fn validate_allowlisted(env: &Env, to: &Address) -> Result<(), TokenError> {
         return Err(TokenError::RecipientNotAllowlisted);
     }
     Ok(())
+}
+
+/// True when the contract has been initialized.
+fn is_initialized(env: &Env) -> bool {
+    env.storage().instance().has(&ADMIN_KEY)
+}
+
+/// True when `expiration_ledger` may be used for a live allowance.
+///
+/// `0` means "never expires" — the convention the Go backend has always used.
+/// Any other value must be at or after the current ledger.
+fn is_expiration_valid(env: &Env, expiration_ledger: u32) -> bool {
+    expiration_ledger == 0 || expiration_ledger >= env.ledger().sequence()
+}
+
+/// True when the allowance record has lapsed.
+fn is_expired(env: &Env, allowance: &AllowanceData) -> bool {
+    allowance.expiration_ledger != 0 && env.ledger().sequence() > allowance.expiration_ledger
+}
+
+/// Reduces `spender`'s allowance on `from` by `amount`.
+///
+/// Follows SEP-41: the allowance is decreased, its expiration ledger is kept,
+/// and the operation fails when the allowance is missing, expired or too
+/// small.
+fn consume_allowance(
+    env: &Env,
+    from: &Address,
+    spender: &Address,
+    amount: i128,
+) -> Result<(), TokenError> {
+    let mut allowances: Map<(Address, Address), AllowanceData> = env
+        .storage()
+        .persistent()
+        .get(&ALLOWANCES_KEY)
+        .ok_or(TokenError::NotInitialized)?;
+    let key = (from.clone(), spender.clone());
+    let allowance: AllowanceData = allowances
+        .get(key.clone())
+        .ok_or(TokenError::Unauthorized)?;
+    if is_expired(env, &allowance) {
+        return Err(TokenError::AllowanceExpired);
+    }
+    if allowance.amount < amount {
+        return Err(TokenError::AllowanceExceeded);
+    }
+    let new_allowance = allowance
+        .amount
+        .checked_sub(amount)
+        .ok_or(TokenError::Underflow)?;
+    allowances.set(
+        key,
+        AllowanceData {
+            amount: new_allowance,
+            expiration_ledger: allowance.expiration_ledger,
+        },
+    );
+    env.storage().persistent().set(&ALLOWANCES_KEY, &allowances);
+    Ok(())
+}
+
+/// Removes `amount` from `from`'s balance and from the total supply.
+fn burn_balance(env: &Env, from: &Address, amount: i128) -> Result<(), TokenError> {
+    let mut balances: Map<Address, i128> = env
+        .storage()
+        .persistent()
+        .get(&BALANCES_KEY)
+        .ok_or(TokenError::NotInitialized)?;
+    let current: i128 = balances.get(from.clone()).unwrap_or(0);
+    if current < amount {
+        return Err(TokenError::InsufficientBalance);
+    }
+    balances.set(from.clone(), current.checked_sub(amount).ok_or(TokenError::Underflow)?);
+    env.storage().persistent().set(&BALANCES_KEY, &balances);
+
+    // Invariant: total supply decreases by exactly the burned amount
+    let total: i128 = env.storage().instance().get(&TOTAL_KEY).unwrap_or(0);
+    let new_total = total.checked_sub(amount).ok_or(TokenError::Underflow)?;
+    env.storage().instance().set(&TOTAL_KEY, &new_total);
+    Ok(())
+}
+
+/// Publishes the canonical SEP-41 `transfer` event.
+///
+/// Muxed transfers carry the muxed id in the event data (map format); plain
+/// transfers use the single-value format, exactly like the Stellar Asset
+/// Contract does.
+fn publish_transfer(env: &Env, from: &Address, to: &MuxedAddress, amount: i128) {
+    match to.id() {
+        Some(to_muxed_id) => Transfer {
+            from: from.clone(),
+            to: to.address(),
+            to_muxed_id: Some(to_muxed_id),
+            amount,
+        }
+        .publish(env),
+        None => TransferWithAmountOnly {
+            from: from.clone(),
+            to: to.address(),
+            amount,
+        }
+        .publish(env),
+    }
 }
