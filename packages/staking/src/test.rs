@@ -566,6 +566,7 @@ fn test_slash_notice_created() {
     assert!(notice.is_some());
     let (amount, notice_until, executor) = notice.unwrap();
     assert_eq!(amount, 50_0000000);
+    assert_eq!(notice_until, env.ledger().timestamp() + 10);
     assert_eq!(executor, admin);
 }
 

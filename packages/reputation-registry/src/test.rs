@@ -8,7 +8,7 @@ use crate::{ReputationRegistry, ReputationRegistryClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
-fn setup(env: &Env) -> (ReputationRegistryClient, Address) {
+fn setup(env: &Env) -> (ReputationRegistryClient<'_>, Address) {
     env.mock_all_auths();
     let contract_id = env.register(ReputationRegistry, ());
     let client = ReputationRegistryClient::new(env, &contract_id);
