@@ -3,6 +3,7 @@ use crate::types::{
     ACTIVITY_COMPLETE, ACTIVITY_CONTRIBUTE, ACTIVITY_DEFAULT, TIER_BRONZE, TIER_DIAMOND, TIER_GOLD,
     TIER_PLATINUM, TIER_SILVER,
 };
+use common::ttl;
 use soroban_sdk::{Address, Env};
 
 const SCORE_SILVER: u32 = 201;
@@ -101,9 +102,9 @@ pub fn record_on_time_payment(
         storage::increment_streak(env, member, circle_id);
         streak += 1;
     } else {
-        env.storage()
-            .persistent()
-            .set(&crate::types::DataKey::Streak(member.clone(), circle_id.clone()), &1u32);
+        let key = crate::types::DataKey::Streak(member.clone(), circle_id.clone());
+        env.storage().persistent().set(&key, &1u32);
+        ttl::extend_persistent(env, &key);
         streak = 1;
     }
     storage::set_last_round(env, member, circle_id, round);

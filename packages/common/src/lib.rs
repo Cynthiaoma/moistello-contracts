@@ -9,6 +9,7 @@
 /// - **vrf**: Verifiable Random Function for fair random selection
 /// - **access**: Role-based access control
 /// - **token_transfer**: Safe token transfer helpers
+/// - **ttl**: Storage TTL extension for persistent and instance entries
 /// - **upgrade**: Proxy/implementation upgrade pattern
 /// - **types**: Shared type definitions
 /// - **explorer**: Block explorer link generation
@@ -64,6 +65,7 @@ pub mod math;
 pub mod pause;
 pub mod reentrancy;
 pub mod token_transfer;
+pub mod ttl;
 pub mod types;
 pub mod upgrade;
 pub mod vrf;

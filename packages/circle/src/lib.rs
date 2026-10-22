@@ -246,7 +246,10 @@ impl Circle {
         contract::withdraw_treasury(&env, &caller, amount)
     }
     /// #469 — Top contributors by total received, newest-round weighted.
-    pub fn query_top_contributors(env: Env, n: u32) -> soroban_sdk::Vec<(Address, i128)> {
+    pub fn query_top_contributors(
+        env: Env,
+        n: u32,
+    ) -> Result<soroban_sdk::Vec<(Address, i128)>, types::CircleError> {
         contract::query_top_contributors(&env, n)
     }
     /// #470 — Cancel an unresolved auction and refund the highest bid atomically.
