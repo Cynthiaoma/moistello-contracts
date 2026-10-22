@@ -18,8 +18,6 @@ pub const RESOLVE_DISMISS: u32 = 1;
 pub const RESOLVE_PENALIZE: u32 = 2;
 pub const RESOLVE_FORCE_PAYOUT: u32 = 3;
 pub const RESOLVE_REFUND: u32 = 4;
-pub const AUCTION_MODE_ENGLISH: u32 = 0;
-pub const AUCTION_MODE_DUTCH: u32 = 1;
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct CircleConfig {
