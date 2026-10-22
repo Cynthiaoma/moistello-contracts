@@ -55,7 +55,7 @@ mod tests {
     /// Deploy a 2-member active circle and return (env, client, admin, token_id, treasury)
     fn setup_active_circle_with_token(
         env: &Env,
-    ) -> (circle::CircleClient, Address, Address, Address, Address) {
+    ) -> (circle::CircleClient<'_>, Address, Address, Address, Address) {
         let mut config = create_config(env);
         config.max_members = 2u32;
         let admin = config.organizer.clone();
