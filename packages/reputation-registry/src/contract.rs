@@ -1,5 +1,5 @@
 use crate::types::*;
-use common::pause;
+use common::{pause, ttl};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 const ACTIVITY_PAGE_SIZE: u32 = 50;
@@ -7,6 +7,7 @@ const ACTIVITY_PAGE_SIZE: u32 = 50;
 pub fn init(env: &Env, admin: &Address) -> Result<(), ReputationError> {
     admin.require_auth();
     env.storage().instance().set(&DataKey::Admin, admin);
+    ttl::extend_instance(env);
     Ok(())
 }
 
@@ -22,6 +23,14 @@ pub fn record(env: &Env, user: &Address, t: u32, impact: u32) -> Result<(), Repu
     if impact > 1000 {
         return Err(ReputationError::InvalidScoreImpact);
     }
+    ttl::extend_instance(env);
+    // Checked before any write so an overflowing counter leaves state untouched.
+    let total_acts: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserActivityCount(user.clone()))
+        .unwrap_or(0);
+    let next_total_acts = total_acts.checked_add(1).ok_or(ReputationError::Overflow)?;
     let now = env.ledger().timestamp();
     let mut score = env
         .storage()
@@ -82,21 +91,17 @@ pub fn record(env: &Env, user: &Address, t: u32, impact: u32) -> Result<(), Repu
     };
     score.last_activity_at = now;
     score.updated_at = now;
-    env.storage()
-        .persistent()
-        .set(&DataKey::Score(user.clone()), &score);
+    let score_key = DataKey::Score(user.clone());
+    env.storage().persistent().set(&score_key, &score);
+    ttl::extend_persistent(env, &score_key);
 
     // Paginated activity storage per user (fixes #245)
-    let total_acts: u32 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::UserActivityCount(user.clone()))
-        .unwrap_or(0);
     let page_index = total_acts / ACTIVITY_PAGE_SIZE;
+    let page_key = DataKey::UserActivityPage(user.clone(), page_index);
     let mut acts: Vec<Activity> = env
         .storage()
         .persistent()
-        .get(&DataKey::UserActivityPage(user.clone(), page_index))
+        .get(&page_key)
         .unwrap_or_else(|| Vec::new(env));
     acts.push_back(Activity {
         user: user.clone(),
@@ -104,12 +109,11 @@ pub fn record(env: &Env, user: &Address, t: u32, impact: u32) -> Result<(), Repu
         score_impact: impact,
         timestamp: now,
     });
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserActivityPage(user.clone(), page_index), &acts);
-    env.storage()
-        .persistent()
-        .set(&DataKey::UserActivityCount(user.clone()), &(total_acts + 1));
+    env.storage().persistent().set(&page_key, &acts);
+    ttl::extend_persistent(env, &page_key);
+    let count_key = DataKey::UserActivityCount(user.clone());
+    env.storage().persistent().set(&count_key, &next_total_acts);
+    ttl::extend_persistent(env, &count_key);
 
     env.events().publish(
         (env.current_contract_address(), symbol_short!("activity")),
@@ -142,21 +146,21 @@ pub fn record(env: &Env, user: &Address, t: u32, impact: u32) -> Result<(), Repu
 // same per-user key. No behavior change in this PR.
 pub fn get_score(env: &Env, u: &Address) -> Result<MoiScore, ReputationError> {
     pause::when_not_paused(env).map_err(|_| ReputationError::ContractPaused)?;
-    Ok(env
-        .storage()
-        .persistent()
-        .get(&DataKey::Score(u.clone()))
-        .unwrap_or_else(|| MoiScore {
-            user: u.clone(),
-            score: 0,
-            tier: TIER_BRONZE,
-            total_circles: 0,
-            completed_circles: 0,
-            defaulted_circles: 0,
-            streak_count: 0,
-            last_activity_at: 0,
-            updated_at: 0,
-        }))
+    ttl::extend_instance(env);
+    let score_key = DataKey::Score(u.clone());
+    let stored: Option<MoiScore> = env.storage().persistent().get(&score_key);
+    ttl::extend_persistent(env, &score_key);
+    Ok(stored.unwrap_or_else(|| MoiScore {
+        user: u.clone(),
+        score: 0,
+        tier: TIER_BRONZE,
+        total_circles: 0,
+        completed_circles: 0,
+        defaulted_circles: 0,
+        streak_count: 0,
+        last_activity_at: 0,
+        updated_at: 0,
+    }))
 }
 
 pub fn get_history(env: &Env, user: &Address, page: u32, page_size: u32) -> Vec<Activity> {
@@ -164,11 +168,10 @@ pub fn get_history(env: &Env, user: &Address, page: u32, page_size: u32) -> Vec<
     if page_size == 0 {
         return out;
     }
-    let total: u32 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::UserActivityCount(user.clone()))
-        .unwrap_or(0);
+    ttl::extend_instance(env);
+    let count_key = DataKey::UserActivityCount(user.clone());
+    let total: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    ttl::extend_persistent(env, &count_key);
     let start = page.saturating_mul(page_size);
     if start >= total {
         return out;
@@ -181,10 +184,9 @@ pub fn get_history(env: &Env, user: &Address, page: u32, page_size: u32) -> Vec<
         let offset = idx % ACTIVITY_PAGE_SIZE;
         if p_idx != current_page_idx {
             current_page_idx = p_idx;
-            current_page_vec = env
-                .storage()
-                .persistent()
-                .get(&DataKey::UserActivityPage(user.clone(), p_idx));
+            let page_key = DataKey::UserActivityPage(user.clone(), p_idx);
+            current_page_vec = env.storage().persistent().get(&page_key);
+            ttl::extend_persistent(env, &page_key);
         }
         if let Some(ref p_vec) = current_page_vec {
             if let Some(act) = p_vec.get(offset) {
@@ -204,6 +206,7 @@ pub fn pause(env: &Env, a: &Address) -> Result<(), ReputationError> {
     if a != &s {
         return Err(ReputationError::Unauthorized);
     }
+    ttl::extend_instance(env);
     pause::pause(env, a).map_err(|_| ReputationError::ContractPaused)
 }
 
@@ -216,5 +219,6 @@ pub fn unpause(env: &Env, a: &Address) -> Result<(), ReputationError> {
     if a != &s {
         return Err(ReputationError::Unauthorized);
     }
+    ttl::extend_instance(env);
     pause::unpause(env, a).map_err(|_| ReputationError::ContractPaused)
 }

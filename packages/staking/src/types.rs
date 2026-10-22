@@ -129,6 +129,8 @@ pub enum StakingError {
     SlashNotAuthorized = 116,
     SlashNoticeExpired = 117,
     ReentrantCall = 118,
+    /// A staker list index was missing while paging. Indicates corrupted staker-list state.
+    StakerIndexOutOfRange = 119,
 }
 
 /// Event emitted when tokens are staked

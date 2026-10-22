@@ -3211,7 +3211,7 @@ pub const MAX_LEADERBOARD_LIMIT: u32 = 50;
 /// 1. Total contribution descending
 /// 2. Earliest contribution/join timestamp ascending (earlier staker/contributor wins)
 /// 3. Member address lexicographical order ascending
-pub fn query_top_contributors(env: &Env, n: u32) -> Vec<(Address, i128)> {
+pub fn query_top_contributors(env: &Env, n: u32) -> Result<Vec<(Address, i128)>, CircleError> {
     let limit = if n > MAX_LEADERBOARD_LIMIT {
         MAX_LEADERBOARD_LIMIT
     } else {
@@ -3219,7 +3219,7 @@ pub fn query_top_contributors(env: &Env, n: u32) -> Vec<(Address, i128)> {
     };
 
     if limit == 0 {
-        return Vec::new(env);
+        return Ok(Vec::new(env));
     }
 
     let members: Vec<Member> = env
@@ -3266,9 +3266,9 @@ pub fn query_top_contributors(env: &Env, n: u32) -> Vec<(Address, i128)> {
     for (addr, (tot, ts)) in totals.iter() {
         let mut insert_pos = sorted_totals.len();
         for j in 0..sorted_totals.len() {
-            let cur_tot = sorted_totals.get(j).unwrap();
-            let cur_ts = sorted_ts.get(j).unwrap();
-            let cur_addr = sorted_addrs.get(j).unwrap();
+            let cur_tot = sorted_totals.get(j).ok_or(CircleError::VecAccessError)?;
+            let cur_ts = sorted_ts.get(j).ok_or(CircleError::VecAccessError)?;
+            let cur_addr = sorted_addrs.get(j).ok_or(CircleError::VecAccessError)?;
 
             let beats = if tot != cur_tot {
                 tot > cur_tot
@@ -3299,9 +3299,11 @@ pub fn query_top_contributors(env: &Env, n: u32) -> Vec<(Address, i128)> {
 
     let mut result = Vec::<(Address, i128)>::new(env);
     for i in 0..sorted_totals.len() {
-        result.push_back((sorted_addrs.get(i).unwrap(), sorted_totals.get(i).unwrap()));
+        let addr = sorted_addrs.get(i).ok_or(CircleError::VecAccessError)?;
+        let tot = sorted_totals.get(i).ok_or(CircleError::VecAccessError)?;
+        result.push_back((addr, tot));
     }
-    result
+    Ok(result)
 }
 
 /// Allows the organizer or admin to withdraw accumulated treasury funds.

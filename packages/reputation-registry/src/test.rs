@@ -1,11 +1,11 @@
 #![cfg(test)]
 
 use crate::types::{
-    ReputationError, ACTIVITY_COMPLETE, ACTIVITY_CONTRIBUTE, ACTIVITY_DEFAULT, ACTIVITY_JOIN,
-    TIER_BRONZE, TIER_DIAMOND, TIER_GOLD, TIER_PLATINUM, TIER_SILVER,
+    DataKey, ReputationError, ACTIVITY_COMPLETE, ACTIVITY_CONTRIBUTE, ACTIVITY_DEFAULT,
+    ACTIVITY_JOIN, TIER_BRONZE, TIER_DIAMOND, TIER_GOLD, TIER_PLATINUM, TIER_SILVER,
 };
 use crate::{ReputationRegistry, ReputationRegistryClient};
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env};
 
 fn setup(env: &Env) -> (ReputationRegistryClient<'_>, Address) {
@@ -119,6 +119,40 @@ fn test_record_rejects_invalid_activity_type() {
 
     let result = client.try_record_activity(&user, &5u32, &100);
     assert_eq!(result, Err(Ok(ReputationError::InvalidActivityType)));
+}
+
+#[test]
+fn test_record_rejects_activity_counter_overflow() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let user = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserActivityCount(user.clone()), &u32::MAX);
+    });
+
+    let result = client.try_record_activity(&user, &ACTIVITY_JOIN, &100);
+    assert_eq!(result, Err(Ok(ReputationError::Overflow)));
+    // The overflow is detected before any write, so the score is untouched.
+    assert_eq!(client.get_score(&user).score, 0);
+}
+
+#[test]
+fn test_activity_survives_default_ttl() {
+    let env = Env::default();
+    let (client, _admin) = setup(&env);
+    let user = Address::generate(&env);
+
+    client.record_activity(&user, &ACTIVITY_JOIN, &100);
+
+    // A fresh entry only lives for the 4096-ledger test-env minimum TTL.
+    // Advancing past it proves record() extended the TTL.
+    env.ledger().with_mut(|li| li.sequence_number += 5_000);
+
+    assert_eq!(client.get_score(&user).score, 100);
+    assert_eq!(client.get_history(&user, &0, &10).len(), 1);
 }
 
 #[test]
