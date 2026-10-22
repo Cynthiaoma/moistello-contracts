@@ -38,7 +38,9 @@ fn test_circle_lifecycle_with_fees() {
 
     let organizer = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract(token_admin.clone());
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let treasury = env.register(treasury::Treasury, ());
     let treasury_client = treasury::TreasuryClient::new(&env, &treasury);
     treasury_client.init(&organizer, &token);

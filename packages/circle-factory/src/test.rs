@@ -60,7 +60,7 @@ fn configure_protocol(client: &CircleFactoryClient, env: &Env, admin: &Address, 
 }
 
 fn setup(env: &Env) -> (CircleFactoryClient, Address, BytesN<32>) {
-    env.budget().reset_unlimited();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
     let contract_id = env.register(CircleFactory, ());
     let client = CircleFactoryClient::new(env, &contract_id);
@@ -76,7 +76,7 @@ fn setup_with_rate_limit(
     limit: u32,
     period_secs: u64,
 ) -> (CircleFactoryClient, Address, BytesN<32>) {
-    env.budget().reset_unlimited();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
     let contract_id = env.register(CircleFactory, ());
     let client = CircleFactoryClient::new(env, &contract_id);

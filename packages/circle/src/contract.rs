@@ -2191,146 +2191,6 @@ pub fn get_contributions(
     }
     out
 }
-/// Calculates the potential payout amount for a member in the current round.
-///
-/// # Parameters
-/// - `env`: Contract execution environment
-/// - `member`: Address of the member to query
-///
-/// # Returns
-/// - `Some(amount)` if the member is eligible for payout in the current round
-/// - `None` if circle is not ACTIVE, member is not eligible, or calculation fails
-///
-/// # Notes
-/// - Calculation is based on payout type (FIXED, RANDOM, AUCTION, or VOTE)
-/// - For FIXED: member must be at the round's rotation position
-/// - For RANDOM: any active member can receive
-/// - For AUCTION: member must have winning bid
-/// - For VOTE: member must have most votes
-///
-/// # Panics
-/// Never panics. Returns None on any error or ineligibility.
-pub fn get_pending_payout(env: &Env, member: &Address) -> Option<i128> {
-    let circle: Circle = match env.storage().instance().get(&DataKey::Circle) {
-        Some(c) => c,
-        None => return None,
-    };
-    if circle.status != STATUS_ACTIVE {
-        return None;
-    }
-    let pool = match math::safe_mul(circle.contribution_amount, circle.member_count as i128) {
-        Ok(p) => p,
-        Err(_) => return None,
-    };
-    let (net, _) = match math::apply_fee(pool, 0) {
-        Ok(v) => v,
-        Err(_) => return None,
-    };
-    let round = circle.current_round;
-    let members: Vec<Member> = match env.storage().persistent().get(&DataKey::Members) {
-        Some(m) => m,
-        None => return None,
-    };
-    match circle.payout_type {
-        PAYOUT_FIXED => {
-            let pos = round % circle.max_members;
-            if (circle.payout_bitmap & (1u128 << pos)) != 0 {
-                return None;
-            }
-            for i in 0..members.len() {
-                if let Some(m) = members.get(i) {
-                    if m.address == *member && m.position == pos && m.status == MEMBER_ACTIVE {
-                        return Some(net);
-                    }
-                }
-            }
-            None
-        }
-        PAYOUT_RANDOM => {
-            for i in 0..members.len() {
-                if let Some(m) = members.get(i) {
-                    if m.address == *member && m.status == MEMBER_ACTIVE {
-                        if (circle.payout_bitmap & (1u128 << m.position)) != 0 {
-                            return None;
-                        }
-                        return Some(net);
-                    }
-                }
-            }
-            None
-        }
-        PAYOUT_AUCTION => {
-            let bids: Vec<AuctionBid> = match env.storage().persistent().get(&DataKey::Bids) {
-                Some(b) => b,
-                None => return None,
-            };
-            let mut min_bps: u32 = 10001;
-            for i in 0..bids.len() {
-                if let Some(b) = bids.get(i) {
-                    if b.round == round && b.discount_bips < min_bps {
-                        min_bps = b.discount_bips;
-                    }
-                }
-            }
-            if min_bps > 10000 {
-                return None;
-            }
-            let mut winner: Option<Address> = None;
-            for i in 0..bids.len() {
-                if let Some(b) = bids.get(i) {
-                    if b.round == round && b.discount_bips == min_bps {
-                        winner = Some(b.bidder.clone());
-                        break;
-                    }
-                }
-            }
-            match winner {
-                Some(w) => {
-                    if w == *member {
-                        Some(net)
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }
-        }
-        PAYOUT_VOTE => {
-            let votes: Vec<VoteEntry> = match env.storage().persistent().get(&DataKey::Votes) {
-                Some(v) => v,
-                None => return None,
-            };
-            let mut tally: Map<Address, u32> = Map::new(env);
-            for i in 0..votes.len() {
-                if let Some(v) = votes.get(i) {
-                    if v.round == round {
-                        let c = tally.get(v.vote_for.clone()).unwrap_or(0);
-                        tally.set(v.vote_for.clone(), c + 1);
-                    }
-                }
-            }
-            let mut best_addr: Option<Address> = None;
-            let mut best_count: u32 = 0;
-            for (addr, count) in tally.iter() {
-                if count > best_count {
-                    best_count = count;
-                    best_addr = Some(addr);
-                }
-            }
-            match best_addr {
-                Some(a) => {
-                    if a == *member {
-                        Some(net)
-                    } else {
-                        None
-                    }
-                }
-                None => None,
-            }
-        }
-        _ => None,
-    }
-}
 /// Pauses the circle, preventing all state-mutating operations.
 ///
 /// # Parameters
@@ -3513,7 +3373,8 @@ pub fn withdraw_treasury(env: &Env, caller: &Address, amount: i128) -> Result<()
     {
         return Err(CircleError::DailyWithdrawalLimitExceeded);
     }
-    let treasury: Address = env
+    // Fail fast when no treasury is configured; the address itself is not used here.
+    let _treasury: Address = env
         .storage()
         .instance()
         .get(&DataKey::Treasury)
