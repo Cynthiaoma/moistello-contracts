@@ -3,5 +3,6 @@
 *.pem
 *.wasm
 *.optimized.wasm
-.env
 config/keys/
+config.bat
+node_modules
